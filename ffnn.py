@@ -77,15 +77,54 @@ class Loss:
         n = y_true.shape[0]
         return -(1/n) * (y_true / y_pred)
 
+class RMSNorm:
+    def __init__(self, size, eps=1e-8):
+        self.eps = eps
+        self.gamma = np.ones((1, size))
+        
+        # cache untuk backprop
+        self.x = None
+        self.rms = None
+        self.x_norm = None
+        
+        # gradien
+        self.d_gamma = None
+        
+        # adam memory untuk gamma
+        self.m_gamma = np.zeros_like(self.gamma)
+        self.v_gamma = np.zeros_like(self.gamma)
+
+    def forward(self, x):
+        self.x = x
+        # hitung Root Mean Square sepanjang dimensi fitur (axis=1)
+        self.rms = np.sqrt(np.mean(x**2, axis=1, keepdims=True) + self.eps)
+        self.x_norm = x / self.rms
+        return self.gamma * self.x_norm
+
+    def backward(self, d_out):
+        N, D = d_out.shape
+        
+        # gradien untuk gamma
+        self.d_gamma = np.sum(d_out * self.x_norm, axis=0, keepdims=True)
+        
+        # gradien untuk input x
+        d_x_norm = d_out * self.gamma
+        
+        # turunan RMSNorm
+        d_rms = np.sum(d_x_norm * self.x * (-1.0 / (self.rms**2)), axis=1, keepdims=True)
+        d_x = (d_x_norm / self.rms) + (d_rms * self.x / (D * self.rms))
+        
+        return d_x
 
 class Layer:
-    def __init__(self, input_size, output_size, activation="relu", init_method="uniform", seed=None, **kwargs):
+    def __init__(self, input_size, output_size, activation="relu", init_method="uniform", seed=None, use_rmsnorm=False, **kwargs):
         if seed is not None:
             np.random.seed(seed)
             
         self.input_size = input_size
         self.output_size = output_size
         self.activation_name = activation.lower()
+        self.use_rmsnorm = use_rmsnorm 
         
         # map fungsi aktivasi
         self.activations = {
@@ -121,9 +160,12 @@ class Layer:
             
         self.bias = np.zeros((1, output_size))
         
+        self.rmsnorm = RMSNorm(output_size) if self.use_rmsnorm else None
+
         # cache buat backprop
         self.inputs = None
         self.z = None
+        self.z_pre_act = None
         self.d_weights = None
         self.d_bias = None
 
@@ -136,14 +178,25 @@ class Layer:
     def forward(self, inputs):
         self.inputs = inputs
         self.z = np.dot(inputs, self.weights) + self.bias
-        return self.act_func(self.z)
+
+        if self.use_rmsnorm:
+            self.z_pre_act = self.rmsnorm.forward(self.z)
+        else:
+            self.z_pre_act = self.z
+            
+        return self.act_func(self.z_pre_act)
 
     def backward(self, d_out):
         if self.activation_name != "softmax":
-            d_z = d_out * self.act_deriv(self.z)
+            d_z_pre_act = d_out * self.act_deriv(self.z_pre_act)
         else:
             # d_out dari softmax+cce udah gabungan
-            d_z = d_out
+            d_z_pre_act = d_out
+        
+        if self.use_rmsnorm:
+            d_z = self.rmsnorm.backward(d_z_pre_act)
+        else:
+            d_z = d_z_pre_act
             
         self.d_weights = np.dot(self.inputs.T, d_z)
         self.d_bias = np.sum(d_z, axis=0, keepdims=True)
@@ -174,9 +227,9 @@ class FFNN:
         return out
 
     def fit(self, X, y, batch_size=32, epochs=100, learning_rate=0.01, verbose=1, 
-            optimizer="adam", l1=0.0, l2=0.0):
+            optimizer="adam", l1=0.0, l2=0.0, validation_data = None):
         
-        history = {'train_loss': []}
+        history = {'train_loss': [], 'val_loss':[]}
         n_samples = X.shape[0]
         
         # hyperparameter adam
@@ -238,15 +291,34 @@ class FFNN:
                         
                         layer.weights -= learning_rate * m_w_hat / (np.sqrt(v_w_hat) + epsilon)
                         layer.bias -= learning_rate * m_b_hat / (np.sqrt(v_b_hat) + epsilon)
+                        
+                        if layer.use_rmsnorm:
+                            layer.rmsnorm.m_gamma = beta1 * layer.rmsnorm.m_gamma + (1 - beta1) * layer.rmsnorm.d_gamma
+                            layer.rmsnorm.v_gamma = beta2 * layer.rmsnorm.v_gamma + (1 - beta2) * (layer.rmsnorm.d_gamma ** 2)
+                            m_g_hat = layer.rmsnorm.m_gamma / (1 - beta1 ** t)
+                            v_g_hat = layer.rmsnorm.v_gamma / (1 - beta2 ** t)
+                            layer.rmsnorm.gamma -= learning_rate * m_g_hat / (np.sqrt(v_g_hat) + epsilon)
                     else:
                         # gradient descent
                         layer.weights -= learning_rate * grad_w
                         layer.bias -= learning_rate * grad_b
+                        
+                        if layer.use_rmsnorm:
+                            layer.rmsnorm.gamma -= learning_rate * layer.rmsnorm.d_gamma
 
-            avg_loss = epoch_loss / num_batches
-            history['train_loss'].append(avg_loss)
+            avg_train_loss = epoch_loss / num_batches
+            history['train_loss'].append(avg_train_loss)
+
+            if validation_data is not None:
+                X_val, y_val = validation_data
+                val_out = self.predict(X_val)
+                val_loss = self.loss_func(y_val, val_out)
+                history['val_loss'].append(val_loss)
             
             if verbose == 1:
-                print(f"epoch {epoch+1}/{epochs} - loss: {avg_loss:.4f}")
+                if validation_data is not None:
+                    print(f"epoch {epoch+1}/{epochs} - loss: {avg_train_loss:.4f} - val_loss: {val_loss:.4f}")
+                else:
+                    print(f"epoch {epoch+1}/{epochs} - loss: {avg_train_loss:.4f}")
 
         return history
