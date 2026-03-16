@@ -1,4 +1,6 @@
 import numpy as np
+import pickle
+import matplotlib.pyplot as plt
 
 class Activation:
     @staticmethod
@@ -322,3 +324,46 @@ class FFNN:
                     print(f"epoch {epoch+1}/{epochs} - loss: {avg_train_loss:.4f}")
 
         return history
+    
+    def plot_weight_distribution(self, layer_indices):
+        plt.figure(figsize=(10, 5))
+        for idx in layer_indices:
+            if idx < len(self.layers):
+                weights = self.layers[idx].weights.flatten()
+                plt.hist(weights, bins=50, alpha=0.5, label=f'Layer {idx}')
+            else:
+                print(f"Layer {idx} di luar range.")
+        plt.title('Distribusi Bobot')
+        plt.xlabel('Nilai Bobot')
+        plt.ylabel('Frekuensi')
+        plt.legend()
+        plt.show()
+
+    def plot_gradient_distribution(self, layer_indices):
+        plt.figure(figsize=(10, 5))
+        for idx in layer_indices:
+            if idx < len(self.layers):
+                if self.layers[idx].d_weights is not None:
+                    grads = self.layers[idx].d_weights.flatten()
+                    plt.hist(grads, bins=50, alpha=0.5, label=f'Layer {idx}')
+                else:
+                    print(f"Gradien Layer {idx} belum dihitung (lakukan forward/backward dulu).")
+            else:
+                print(f"Layer {idx} di luar range.")
+        plt.title('Distribusi Gradien Bobot')
+        plt.xlabel('Nilai Gradien')
+        plt.ylabel('Frekuensi')
+        plt.legend()
+        plt.show()
+
+    def save(self, filepath):
+        with open(filepath, 'wb') as f:
+            pickle.dump(self, f)
+        print(f"Model berhasil disimpan ke {filepath}")
+
+    @staticmethod
+    def load(filepath):
+        with open(filepath, 'rb') as f:
+            model = pickle.load(f)
+        print(f"Model berhasil dimuat dari {filepath}")
+        return model
