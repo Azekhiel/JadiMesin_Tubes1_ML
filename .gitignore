@@ -1,2 +1,4 @@
 preprocess.py
 venv
+__pycache__
+dataset
